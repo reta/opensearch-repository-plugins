@@ -1,0 +1,13 @@
+bin/
+build-eclipse/
+.gradle/
+build/
+.idea/
+!.idea/codeStyles/codeStyleConfig.xml
+.DS_Store
+*.log
+out/
+.project
+.settings
+.classpath
+.vscode

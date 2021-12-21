@@ -1,0 +1,230 @@
+/*
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * The OpenSearch Contributors require contributions made to
+ * this file be licensed under the Apache-2.0 license or a
+ * compatible open source license.
+ *
+ * Modifications Copyright OpenSearch Contributors. See
+ * GitHub history for details.
+ */
+
+/*
+ * Licensed to Elasticsearch under one or more contributor
+ * license agreements. See the NOTICE file distributed with
+ * this work for additional information regarding copyright
+ * ownership. Elasticsearch licenses this file to you under
+ * the Apache License, Version 2.0 (the "License"); you may
+ * not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *    http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import com.avast.gradle.dockercompose.tasks.ComposePull
+import com.github.jengelman.gradle.plugins.shadow.ShadowPlugin
+import de.thetaphi.forbiddenapis.gradle.ForbiddenApisPlugin
+import org.apache.tools.ant.taskdefs.condition.Os
+import org.opensearch.gradle.BuildPlugin
+import org.opensearch.gradle.Version
+import org.opensearch.gradle.VersionProperties
+import org.opensearch.gradle.info.BuildParams
+import org.opensearch.gradle.plugin.PluginBuildPlugin
+import org.gradle.plugins.ide.eclipse.model.AccessRule
+import org.gradle.plugins.ide.eclipse.model.EclipseJdt
+import org.gradle.plugins.ide.eclipse.model.SourceFolder
+import org.gradle.util.DistributionLocator
+import org.gradle.util.GradleVersion
+import static org.opensearch.gradle.util.GradleUtils.maybeConfigure
+
+buildscript {
+  ext {
+    opensearch_version = "1.3.0-SNAPSHOT"
+    version = opensearch_version
+  }
+
+  repositories {
+    mavenLocal()
+    mavenCentral()
+    maven { 
+      url "https://aws.oss.sonatype.org/content/repositories/snapshots"
+      mavenContent {
+        snapshotsOnly()
+      } 
+    }
+  }
+
+  dependencies {
+    classpath "org.opensearch.gradle:build-tools:${opensearch_version}"
+  }
+}
+
+plugins {
+  id "com.diffplug.spotless" version "5.6.1" apply false
+  id 'java'
+}
+
+apply plugin: "opensearch.docker-support"
+
+// common maven publishing configuration
+allprojects {
+  group = 'org.opensearch'
+  version = version
+  description = "OpenSearch repository plugins subproject ${project.path}"
+  
+  // injecting groovy property variables into all projects
+  project.ext {
+    // for ide hacks...
+    isEclipse = System.getProperty("eclipse.launcher") != null ||   // Detects gradle launched from Eclipse's IDE
+      System.getProperty("eclipse.application") != null ||    // Detects gradle launched from the Eclipse compiler server
+      gradle.startParameter.taskNames.contains('eclipse') ||  // Detects gradle launched from the command line to do eclipse stuff
+      gradle.startParameter.taskNames.contains('cleanEclipse')
+  }
+}
+
+subprojects {
+  // Default to the apache license
+  project.ext.licenseName = 'The Apache Software License, Version 2.0'
+  project.ext.licenseUrl = 'http://www.apache.org/licenses/LICENSE-2.0.txt'
+
+  plugins.withType(BuildPlugin).whenPluginAdded {
+    project.licenseFile = project.rootProject.file('licenses/APACHE-LICENSE-2.0.txt')
+    project.noticeFile = project.rootProject.file('NOTICE.txt')
+  }
+}
+
+allprojects {
+  // configure compiler options
+  tasks.withType(JavaCompile).configureEach { JavaCompile compile ->
+    compile.options.compilerArgs << '-Werror'
+    compile.options.compilerArgs << '-Xlint:auxiliaryclass'
+    compile.options.compilerArgs << '-Xlint:cast'
+    compile.options.compilerArgs << '-Xlint:classfile'
+    compile.options.compilerArgs << '-Xlint:dep-ann'
+    compile.options.compilerArgs << '-Xlint:divzero'
+    compile.options.compilerArgs << '-Xlint:empty'
+    compile.options.compilerArgs << '-Xlint:exports'
+    compile.options.compilerArgs << '-Xlint:fallthrough'
+    compile.options.compilerArgs << '-Xlint:finally'
+    compile.options.compilerArgs << '-Xlint:module'
+    compile.options.compilerArgs << '-Xlint:opens'
+    compile.options.compilerArgs << '-Xlint:overloads'
+    compile.options.compilerArgs << '-Xlint:overrides'
+    compile.options.compilerArgs << '-Xlint:processing'
+    compile.options.compilerArgs << '-Xlint:rawtypes'
+    compile.options.compilerArgs << '-Xlint:removal'
+    compile.options.compilerArgs << '-Xlint:requires-automatic'
+    compile.options.compilerArgs << '-Xlint:requires-transitive-automatic'
+    compile.options.compilerArgs << '-Xlint:static'
+    compile.options.compilerArgs << '-Xlint:unchecked'
+    compile.options.compilerArgs << '-Xlint:varargs'
+    compile.options.compilerArgs << '-Xlint:preview'
+    // TODO: disabled warnings: path, serial, options, deprecation, try
+    // -path because gradle will send in paths that don't always exist.
+    // -missing because we have tons of missing @returns and @param.
+    // -serial because we don't use java serialization.
+    compile.options.compilerArgs << '-Xdoclint:accessibility'
+    compile.options.compilerArgs << '-Xdoclint:html'
+    compile.options.compilerArgs << '-Xdoclint:reference'
+    compile.options.compilerArgs << '-Xdoclint:syntax'
+  }
+
+  // ignore missing javadocs
+  tasks.withType(Javadoc).configureEach { Javadoc javadoc ->
+    // the -quiet here is because of a bug in gradle, in that adding a string option
+    // by itself is not added to the options. By adding quiet, both this option and
+    // the "value" -quiet is added, separated by a space. This is ok since the javadoc
+    // command already adds -quiet, so we are just duplicating it
+    // see https://discuss.gradle.org/t/add-custom-javadoc-option-that-does-not-take-an-argument/5959
+    javadoc.options.encoding = 'UTF8'
+    javadoc.options.addStringOption('Xdoclint:all,-missing', '-quiet')
+  }
+}
+
+// Ensure similar tasks in dependent projects run first. The projectsEvaluated here is
+// important because, while dependencies.all will pickup future dependencies,
+// it is not necessarily true that the task exists in both projects at the time
+// the dependency is added.
+gradle.projectsEvaluated {
+  allprojects {
+    if (tasks.findByPath('test') != null && tasks.findByPath('integTest') != null) {
+      integTest.mustRunAfter test
+    }
+
+    project.tasks.withType(Test) { task ->
+      if (task != null) {
+        if (BuildParams.runtimeJavaVersion > JavaVersion.VERSION_17) {
+          task.jvmArgs += ["-Djava.security.manager=allow"]
+        }
+      }
+    }
+  }
+}
+
+// eclipse configuration
+allprojects {
+  apply plugin: 'eclipse'
+
+  // Name all the non-root projects after their path so that paths get grouped together when imported into eclipse.
+  if (path != ':') {
+    eclipse.project.name = path
+    if (Os.isFamily(Os.FAMILY_WINDOWS)) {
+      eclipse.project.name = eclipse.project.name.replace(':', '_')
+    }
+  }
+
+  plugins.withType(JavaBasePlugin) {
+    eclipse.classpath.defaultOutputDir = file('build-eclipse')
+    eclipse.classpath.downloadJavadoc = true
+    eclipse.classpath.downloadSources = true
+    
+    eclipse.classpath.file.whenMerged { classpath ->
+      // give each source folder a unique corresponding output folder
+      int i = 0;
+      classpath.entries.findAll { it instanceof SourceFolder }.each { folder ->
+        i++;
+        folder.output = "build-eclipse/" + i
+      }
+    }
+  }
+
+  /*
+   * Allow accessing com/sun/net/httpserver in projects that have
+   * configured forbidden apis to allow it.
+   */
+  plugins.withType(ForbiddenApisPlugin) {
+    eclipse.classpath.file.whenMerged { classpath ->
+      if (false == forbiddenApisTest.bundledSignatures.contains('jdk-non-portable')) {
+        classpath.entries
+          .findAll { it.kind == "con" && it.toString().contains("org.eclipse.jdt.launching.JRE_CONTAINER") }
+          .each {
+            it.accessRules.add(new AccessRule("accessible", "com/sun/net/httpserver/*"))
+          }
+      }
+    }
+  }
+
+  // otherwise .settings is not nuked entirely
+  tasks.register('wipeEclipseSettings', Delete) {
+    delete '.settings'
+  }
+  tasks.named('cleanEclipse') { dependsOn 'wipeEclipseSettings' }
+  // otherwise the eclipse merging is *super confusing*
+  tasks.named('eclipse') { dependsOn 'cleanEclipse' }
+}
+
+allprojects {
+  tasks.register('resolveAllDependencies', org.opensearch.gradle.ResolveAllDependencies) {
+    configs = project.configurations
+    if (project.path.contains("fixture")) {
+      dependsOn tasks.withType(ComposePull)
+    }
+  }
+}
